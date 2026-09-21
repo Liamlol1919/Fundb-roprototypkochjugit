@@ -203,6 +203,38 @@ st.markdown("""
         align-items: center;
         gap: 6px;
     }
+
+    /* Grosse, fette Modi-Buttons (Tabs) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+        background: #ffffff;
+        border: 2px solid #0f172a;
+        border-radius: 14px;
+        padding: 8px;
+        box-shadow: 4px 4px 0px #0f172a;
+        flex-wrap: wrap;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Space Grotesk', 'Inter', sans-serif;
+        font-size: 1.1rem;
+        font-weight: 700;
+        padding: 14px 26px;
+        border-radius: 10px;
+        color: #334155;
+        transition: background 0.15s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background: #e2e8f0;
+    }
+    .stTabs [aria-selected="true"] {
+        background: #0f172a !important;
+        color: #ffffff !important;
+        border-radius: 10px;
+    }
+    .stTabs [data-baseweb="tab-highlight"],
+    .stTabs [data-baseweb="tab-border"] {
+        display: none;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -456,6 +488,23 @@ IMAGENET_CLASS_TO_CATEGORY = {
 }
 
 @st.cache_resource(show_spinner=False)
+def load_custom_model():
+    """Lädt das selbst trainierte Modell (keras_model.h5 + labels.txt), falls vorhanden."""
+    try:
+        from tensorflow import keras
+        model = keras.models.load_model("keras_model.h5", compile=False)
+        labels = []
+        with open("labels.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split(" ", 1)
+                labels.append(parts[1] if len(parts) > 1 else parts[0])
+        if model and labels:
+            return model, labels
+    except Exception:
+        pass
+    return None
+
+@st.cache_resource(show_spinner=False)
 def load_mobilenet_model():
     """Versucht MobileNetV2 zu laden (nur wenn TensorFlow installiert ist)."""
     try:
@@ -468,9 +517,28 @@ def load_mobilenet_model():
 
 def analyze_image_ai(pil_image: Image.Image):
     """
-    KI-Erkennung: MobileNetV2 (falls verfügbar), sonst Heuristik.
+    KI-Erkennung: Zuerst das eigene trainierte Modell (keras_model.h5),
+    dann MobileNetV2 (falls verfügbar), sonst Heuristik.
     """
-    # Versuche MobileNetV2
+    # 1. Eigenes trainiertes Modell (beste Ergebnisse, exakt unsere Kategorien)
+    custom_result = load_custom_model()
+    if custom_result is not None:
+        model, labels = custom_result
+        try:
+            image = ImageOps.fit(pil_image, (224, 224), Image.Resampling.LANCZOS)
+            img_array = np.asarray(image, dtype=np.float32)
+            img_array = (img_array / 127.5) - 1.0  # Teachable-Machine-Normalisierung
+            img_array = np.expand_dims(img_array, axis=0)
+
+            preds = model.predict(img_array, verbose=0)[0]
+            best_idx = int(np.argmax(preds))
+            category = labels[best_idx]
+            if category in CATEGORIES:
+                return category, float(preds[best_idx]), "Custom-CNN (keras_model.h5)"
+        except Exception:
+            pass
+
+    # 2. MobileNetV2 (ImageNet) als Fallback
     mobilenet_result = load_mobilenet_model()
     if mobilenet_result is not None:
         model, preprocess_input, decode_predictions = mobilenet_result
@@ -746,7 +814,8 @@ with tab_erfassen:
                     {ai_category}
                 </div>
                 <div style="font-size: 0.82rem; color: #475569; margin-top: 2px;">
-                    Sicherheit: <b>{ai_confidence*100:.1f}%</b> • Modell: <code>{ai_engine}</code>
+                    Sicherheit: <b>{ai_confidence*100:.1f}%</b> • Modell: <code>{ai_engine}</code><br>
+                    {"✅ Wird automatisch eingetragen (über 65%)." if ai_confidence >= 0.65 else "⚠️ KI unsicher – Kategorie kann unten manuell gewählt werden."}
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -756,16 +825,32 @@ with tab_erfassen:
         with st.form("form_add_item", clear_on_submit=True):
             in_titel = st.text_input("Titel des Gegenstands*", placeholder="z. B. Blaue Nike Sporttasche")
 
-            # KI-Kategorie wird automatisch übernommen – keine manuelle Auswahl
+            # Ab 65% Sicherheit automatisch übernehmen, sonst manuell wählen
             if ai_category not in CATEGORIES:
                 ai_category = "Sonstiges"
 
-            st.markdown(f"""
-            <div style="background:#f1f5f9; padding:10px 14px; border-radius:8px; border-left:4px solid #0f172a; margin-bottom:10px;">
-                <span style="font-weight:700;">🔍 KI-Kategorie:</span> {ai_category}
-                <span style="color:#64748b; font-size:0.85rem;">(automatisch erkannt)</span>
-            </div>
-            """, unsafe_allow_html=True)
+            auto_confident = ai_confidence >= 0.65
+
+            if auto_confident:
+                in_kategorie = ai_category
+                st.markdown(f"""
+                <div style="background:#f0fdf4; padding:12px 14px; border-radius:8px; border-left:4px solid #16a34a; margin-bottom:10px;">
+                    <span style="font-weight:700;">✅ KI-Kategorie automatisch übernommen:</span> <b>{ai_category}</b>
+                    <span style="color:#16a34a; font-size:0.85rem;">({ai_confidence*100:.0f}% Sicherheit)</span>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="background:#fffbeb; padding:12px 14px; border-radius:8px; border-left:4px solid #d97706; margin-bottom:6px;">
+                    <span style="font-weight:700;">🤔 KI unsicher ({ai_confidence*100:.0f}%) – Vorschlag: {ai_category}</span><br>
+                    <span style="color:#78350f; font-size:0.85rem;">Bitte Kategorie bestätigen oder korrigieren:</span>
+                </div>
+                """, unsafe_allow_html=True)
+                in_kategorie = st.selectbox(
+                    "Kategorie*",
+                    CATEGORIES,
+                    index=CATEGORIES.index(ai_category) if ai_category in CATEGORIES else 0
+                )
 
             in_fundort = st.selectbox("Wo wurde es gefunden?*", LOCATIONS)
             in_abgabeort = st.text_input("Aktueller Aufbewahrungsort*", value="Hausmeisterbüro (Raum 001)")
@@ -796,7 +881,7 @@ with tab_erfassen:
 
                     parsed_tags = [t.strip() for t in in_tags.split(",") if t.strip()]
                     if not parsed_tags:
-                        parsed_tags = [ai_category.split(" ")[0]]
+                        parsed_tags = [in_kategorie.split(" ")[0]]
 
                     today_str = datetime.date.today().strftime("%Y-%m-%d")
                     expiry_str = (datetime.date.today() + datetime.timedelta(days=90)).strftime("%Y-%m-%d")
@@ -804,7 +889,7 @@ with tab_erfassen:
                     new_item = {
                         "id": new_id,
                         "titel": in_titel.strip(),
-                        "kategorie": ai_category,  # <-- Automatisch übernommen
+                        "kategorie": in_kategorie,  # Ab 65% automatisch, sonst manuell bestätigt
                         "fundort": in_fundort,
                         "abgabeort": in_abgabeort.strip(),
                         "kontakt_kuerzel": in_kuerzel.strip().upper(),
